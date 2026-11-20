@@ -1,67 +1,146 @@
 # AI Auction Arena
 
+A first-price sealed-bid auction simulator in which two neural-network agents learn bidding
+strategies from scratch through self-play, and are benchmarked against the theoretical
+game-theoretic optimum.
+
 **Live demo:** https://ai-auction-arena.streamlit.app/
 
-## Project overview
-AI Auction Arena is a first-price sealed-bid auction simulator. It trains two independent neural-network bidding agents through self-play using a REINFORCE-style policy-gradient approach. Each agent receives a private item value, samples a bid, competes in an auction, and receives a reward equal to value minus bid if it wins (zero if it loses).
+---
 
-The project also includes:
-- A command-line auction game against the trained AI
-- A Streamlit interface for playing, learning auction theory, tournaments, benchmarks, and strategy visualization
-- A separate regret-minimization experiment
-- Evaluation and benchmarking scripts
-- A saved PyTorch model checkpoint
+## The problem
 
-The scripts compare the learned bidding strategy with the theoretical benchmark b(v) = 0.5v for the symmetric two-bidder, independent uniform-value first-price auction.
+In a first-price sealed-bid auction, each bidder privately observes their own valuation of an
+item, submits a single bid without seeing anyone else's, and the highest bidder wins and pays
+exactly what they bid. Profit is `value − bid` for the winner and zero for everyone else.
+
+This creates a genuine strategic tension: bid your true value and you win often but profit
+nothing; shade your bid too far and you profit when you win but rarely win. The question is
+whether agents with no prior knowledge of auction theory can discover the right amount of
+shading purely from experience.
+
+For the symmetric two-bidder case with values drawn independently from a uniform distribution,
+auction theory gives the Bayes-Nash equilibrium strategy in closed form:
+
+```
+b(v) = 0.5 · v
+```
+
+That closed form is what makes this a useful testbed — there is a known right answer to measure
+learned behaviour against.
+
+---
+
+## What this project does
+
+Two independent policy networks play repeated auctions against each other. Each receives a
+private value, samples a bid, and is rewarded by the auction outcome. Over 120,000 training
+episodes the agents adjust their policies by policy gradient, and the learned bidding function
+is compared against `b(v) = 0.5v` along with random and truthful baselines.
+
+A second, independent method — discretised regret matching — is implemented separately so the
+two approaches to strategy learning can be compared on the same game.
+
+---
+
+## Approach and design decisions
+
+**Policy network.** A small MLP: `1 → 64 → 64 → 1`, ReLU activations, sigmoid output. The
+sigmoid matters — values are drawn from `U(0,1)`, so bounding the output to `[0,1]` makes
+out-of-range bids structurally impossible rather than something the agent must learn to avoid.
+
+**Stochastic policy for exploration.** The network emits the *mean* of a Gaussian
+(`σ = 0.05`); the actual bid is sampled from it and clamped to `[0,1]`. A deterministic policy
+would have no exploration signal in a continuous action space, so the gradient needs the
+sampled action and its log-probability.
+
+**REINFORCE with advantage normalisation.** The policy-gradient loss is
+`−(log π(b|v) · A)` where the advantage is the batch reward standardised to zero mean and unit
+variance. Raw auction rewards are sparse and heavily skewed — a losing bid pays exactly zero —
+so without normalisation the gradient magnitude swings wildly between batches.
+
+**Entropy bonus (`0.01`).** Counteracts premature collapse onto a narrow bid range before the
+agent has explored enough of the strategy space.
+
+**Alternating self-play.** The central difficulty in multi-agent learning is that your opponent
+is also learning, so the environment is non-stationary — each agent is chasing a moving target.
+This implementation freezes one agent for 2,000-episode phases while the other updates, then
+alternates. The frozen agent acts as a temporarily stationary opponent, which stabilises
+training considerably compared with updating both simultaneously.
+
+**Hyperparameters.** 120,000 episodes, batch size 512, Adam at `5e-4`, phase length 2,000.
+
+---
+
+## Results and how to read them
+
+After training, the learned bidding function is evaluated on a grid of 100 values and compared
+against the analytical benchmark by mean squared error:
+
+```
+MSE vs Nash (Agent 1): printed at end of training
+MSE vs Nash (Agent 2): printed at end of training
+```
+
+**What this does and does not show.** A low MSE means the learned bidding function lies close
+to the theoretical equilibrium strategy over the sampled value range. It is an empirical
+distance measurement, not a proof. This project does not establish convergence to a Nash
+equilibrium in any formal sense — no equilibrium certificate, no exploitability bound, and no
+guarantee the policy is stable under further training. Treat the number as evidence that
+self-play recovered approximately the right shading behaviour, nothing stronger.
+
+`benchmark_agents.py` gives the complementary view: how the trained agent actually performs in
+head-to-head play against random, truthful and Nash-strategy opponents.
+
+---
 
 ## Files
-- `train_self_rl.py` — trains two policy networks using alternating self-play updates, policy-gradient losses, entropy regularization, and reward normalization. Saves `saved_model.pt`.
-- `evaluate_model.py` — loads the trained model and plots its bidding function against the Nash benchmark.
-- `auction_game.py` — terminal-based interactive auction game against the AI, with a leaderboard.
-- `streamlit_app.py` — web UI with Play Game, Learn Theory, Tournament, Benchmark, and Strategy pages.
-- `regret_minimization.py` — discretized regret-matching experiment and strategy comparison plot.
-- `benchmark_agents.py` — evaluates the trained AI against random, truthful, and Nash-strategy opponents.
-- `saved_model.pt` — trained PyTorch state-dictionary checkpoint used by the evaluation and game applications.
 
-## Setup
-Use Python 3.10+ (a compatible PyTorch installation is required).
+| File | Purpose |
+|---|---|
+| `train_self_rl.py` | Self-play training loop; saves `saved_model.pt` |
+| `evaluate_model.py` | Plots the learned bidding function against the Nash benchmark |
+| `benchmark_agents.py` | Head-to-head evaluation vs random, truthful and Nash bidders |
+| `regret_minimization.py` | Independent regret-matching experiment for comparison |
+| `auction_game.py` | Terminal game: play auctions against the trained agent |
+| `streamlit_app.py` | Web UI — play, theory, tournament, benchmark and strategy views |
+| `saved_model.pt` | Trained PyTorch state dict (Agent 1) |
 
-Install dependencies:
+---
+
+## Running it
+
+Python 3.10+.
+
 ```bash
-pip install torch numpy matplotlib streamlit
+pip install -r requirements.txt
 ```
 
-Run training:
 ```bash
-python train_self_rl.py
+streamlit run streamlit_app.py      # web interface
+python train_self_rl.py             # retrain (overwrites saved_model.pt)
+python evaluate_model.py            # strategy plot vs benchmark
+python benchmark_agents.py          # head-to-head results
+python regret_minimization.py       # regret-matching comparison
+python auction_game.py              # terminal game
 ```
 
-Run evaluation:
-```bash
-python evaluate_model.py
-```
+Scripts that load the checkpoint expect `saved_model.pt` in the working directory.
 
-Run the terminal game:
-```bash
-python auction_game.py
-```
+---
 
-Run the Streamlit application:
-```bash
-streamlit run streamlit_app.py
-```
+## Limitations
 
-Run regret minimization:
-```bash
-python regret_minimization.py
-```
+- Two bidders only, symmetric, with values from `U(0,1)`. Asymmetric valuations, reserve
+  prices, more than two bidders, and other auction formats (second-price, all-pay) are not
+  implemented — each would change the equilibrium and require a different benchmark.
+- `train_self_rl.py` saves only Agent 1's weights; Agent 2 is discarded after training.
+- This is a research and learning simulator, not a production auction or trading system.
 
-Run benchmark:
-```bash
-python benchmark_agents.py
-```
+---
 
-Keep `saved_model.pt` in the same working directory as scripts that load it. Running the training script will overwrite the checkpoint with the newly trained Agent 1 model.
+## Possible extensions
 
-## Important implementation note
-This is a research/learning simulator, not a production auction or financial trading system. The training code alternates updates between agents and uses sampled, clipped Normal bids. The evaluation scripts provide empirical comparisons; they do not by themselves prove convergence to a Nash equilibrium.
+Second-price and all-pay formats (where the equilibrium strategies differ sharply), asymmetric
+value distributions, N > 2 bidders, and measuring exploitability against a best-response
+opponent rather than distance from a closed-form benchmark.
