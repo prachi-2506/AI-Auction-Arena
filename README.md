@@ -1,5 +1,7 @@
 # AI Auction Arena
 
+**Live demo:** https://ai-auction-arena.streamlit.app/
+
 ## Project overview
 AI Auction Arena is a first-price sealed-bid auction simulator. It trains two independent neural-network bidding agents through self-play using a REINFORCE-style policy-gradient approach. Each agent receives a private item value, samples a bid, competes in an auction, and receives a reward equal to value minus bid if it wins (zero if it loses).
 
